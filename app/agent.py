@@ -19,11 +19,12 @@ from typing import Any, AsyncGenerator
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from google.adk.agents import Agent, BaseAgent, InvocationContext
+from google.adk.agents import Agent, BaseAgent, InvocationContext, Context
 from google.adk.apps import App
 from google.adk.models import Gemini
 from google.adk.workflow import Workflow, node, JoinNode, START
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.genai import types
 
 import os
@@ -176,8 +177,18 @@ class WorkflowAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
-        async for event in self._workflow.run(ctx=ctx, node_input=ctx.user_content):
+        workflow_ctx = Context(ctx, node=self._workflow)
+        async for event in self._workflow.run(ctx=workflow_ctx, node_input=ctx.user_content):
             yield event
+
+        # Explicitly transfer back to parent to continue the turn
+        if self.parent_agent:
+            yield Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                branch=ctx.branch,
+                actions=EventActions(transfer_to_agent=self.parent_agent.name),
+            )
 
 
 evaluation_workflow_agent = WorkflowAgent(evaluation_workflow)
