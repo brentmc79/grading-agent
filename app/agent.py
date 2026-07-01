@@ -136,7 +136,6 @@ infra_evaluator = Agent(
 async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None]:
     """Prepares the input and asks for confirmation if it's a GitHub URL."""
     target_url = ctx.state.get("target_url")
-    print(f"prep_node: target_url={target_url}, resume_inputs={ctx.resume_inputs}", flush=True)
 
     if not target_url:
         text = ""
@@ -305,9 +304,7 @@ class WorkflowAgent(BaseAgent):
         workflow_ctx = Context(ctx, node=self._workflow, resume_inputs=resume_inputs)
         async for event in self._workflow.run(ctx=workflow_ctx, node_input=ctx.user_content):
             yield event
-        
         paused = bool(workflow_ctx.interrupt_ids)
-        print(f"WorkflowAgent: finished run, workflow_ctx.interrupt_ids={workflow_ctx.interrupt_ids}, paused={paused}", flush=True)
 
         # Explicitly transfer back to parent to continue the turn, only if not paused
         if self.parent_agent and not paused:
