@@ -70,6 +70,7 @@ os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
 FIRESTORE_DATABASE = os.environ.get("FIRESTORE_DATABASE", "(default)")
+EVAL_MODE = os.environ.get("GRADER_EVAL_MODE", "false").lower() == "true"
 
 
 # 1. Define Pydantic Models
@@ -183,7 +184,17 @@ async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None
         yield Event(state={"target_url": target_url})
         logger.info("prep_node: target_url initialized", extra={"extra_fields": {"target_url": target_url}})
 
-    if "github.com" in target_url:
+    if "github.com" not in target_url:
+        logger.warning("prep_node: invalid URL", extra={"extra_fields": {"target_url": target_url}})
+        yield Event(
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Error: Only GitHub repositories are supported for evaluation. Please provide a valid GitHub URL (e.g., https://github.com/user/repo).")],
+            )
+        )
+        return
+
+    if "github.com" in target_url and not EVAL_MODE:
         if not ctx.resume_inputs or "confirm_eval" not in ctx.resume_inputs:
             logger.info("prep_node: pausing for user confirmation", extra={"extra_fields": {"target_url": target_url}})
             yield RequestInput(
@@ -243,7 +254,7 @@ collect_final_data = JoinNode(name="collect_final_data")
 
 
 @node
-def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport:
+def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport | None:
     """Stores the evaluation report in Firestore."""
     url = node_input.get("prep_node")
     final_report = node_input.get("compile_report")
@@ -252,8 +263,8 @@ def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport:
     logger.info("store_report started", extra={"extra_fields": {"session_id": session_id, "url": url}})
 
     if not url or not final_report:
-        logger.error("store_report: missing url or final_report in input", extra={"extra_fields": {"session_id": session_id}})
-        raise ValueError("Missing url or final_report in store_report input")
+        logger.warning("store_report: missing url or final_report in input, skipping storage", extra={"extra_fields": {"session_id": session_id}})
+        return None
 
     if isinstance(final_report, dict):
         final_report_obj = FinalReport(**final_report)
@@ -368,9 +379,14 @@ assessment_coordinator = Agent(
     model=Gemini(model="gemini-2.5-pro"),
     instruction="""You are the Assessment Coordinator. 
     Your job is to coordinate the evaluation of a codebase or agent configuration.
-    1. When you receive a URL or a codebase description, you must route it to the `evaluation_workflow` sub-agent.
+    1. When you receive a URL, you must route it to the `evaluation_workflow` sub-agent. If the input is not a URL, ask the user to provide a valid GitHub URL.
     2. If the `evaluation_workflow` has paused to ask the user for confirmation or input, and the user responds, you must call the `evaluation_workflow` again, passing the user's response to it so it can resume.
     3. Once the workflow completes and returns the FinalReport, you must format the final output as a detailed markdown report for the user.
+    4. Self-Evaluation: Before presenting the report to the user, you must verify that:
+       - The report contains all 5 categories (Tools, Memory, Orchestration, Observability, Infrastructure).
+       - Each category has a score, evidence, and recovery instructions.
+       - The total score is the sum of the category scores.
+       - If any information is missing or inconsistent, you must explain the issue instead of presenting an incomplete report.
     Important: Include the total score exactly as returned (e.g., X/95), and list the individual category grades with their scores (out of 20 for Tools, Memory, Orchestration, Observability; and out of 15 for Infrastructure). Do not scale or modify the scores.
     Include the evidence and recovery instructions for each category, and the overall summary.
     """,
