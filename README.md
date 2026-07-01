@@ -40,11 +40,15 @@ graph TD
     *   **Role**: Receives the input (e.g., a codebase URL), routes it to the `evaluation_workflow`, and formats the final `FinalReport` output as a detailed markdown report.
 
 2.  **Evaluation Workflow** (Workflow):
-    *   Orchestrates the parallel execution of the evaluators.
-    *   **Flow**: `START` -> `prep_node` -> (Parallel Evaluators) -> `collect_grades` (JoinNode) -> `compile_report`.
+    *   Orchestrates the execution of the evaluators. They are executed sequentially (`max_concurrency=1`) to avoid Gemini `429 ResourceExhausted` rate limits and the 5-minute Vertex AI Reasoning Engine timeout.
+    *   **Flow**: `START` -> `prep_node` -> (Sequential Evaluators) -> `collect_grades` (JoinNode) -> `compile_report`.
 
 3.  **Evaluators** (Sub-agents):
-    *   **Model**: `gemini-2.5-flash` (single-turn)
+    *   **Model**: Dynamically selected based on repository complexity (file count > 20):
+        *   **Simple Path** (≤ 20 files): All 5 categories evaluated using `gemini-2.5-flash`.
+        *   **Complex Path** (> 20 files - Hybrid):
+            *   `tool_evaluator`, `observability_evaluator`, and `infra_evaluator` use `gemini-2.5-flash` (faster, checklist-based).
+            *   `memory_evaluator` and `orchestration_evaluator` use `gemini-2.5-pro` (deeper analysis of agent logic).
     *   **Output Schema**: `CategoryGrade` (contains `score`, `evidence`, and `recovery_instructions`)
     *   **Categories**:
         *   `tool_evaluator`: Evaluates tool docstrings, naming, explicit schemas, and error handling.
