@@ -38,13 +38,15 @@ os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
 # 1. Define Pydantic Models
 class CategoryGrade(BaseModel):
-    score: int = Field(description="Score for the category (0-10)")
+    score: int = Field(
+        description="Score for the category. Max 20 for Tools, Memory, Orchestration, Observability; Max 15 for Infrastructure."
+    )
     evidence: str = Field(description="Evidence supporting the score")
     recovery_instructions: str = Field(description="Instructions on how to improve")
 
 
 class FinalReport(BaseModel):
-    total_score: int = Field(description="Sum of all category scores")
+    total_score: int = Field(description="Sum of all category scores (max 95)")
     grades: dict[str, CategoryGrade] = Field(
         description="Grades keyed by category name"
     )
@@ -58,7 +60,13 @@ sub_model = Gemini(model="gemini-2.5-flash")
 tool_evaluator = Agent(
     name="tool_evaluator",
     model=sub_model,
-    instruction="Evaluate tool docstrings, naming, explicit schemas, and error handling. Output a CategoryGrade.",
+    instruction="""Evaluate the codebase for Tool & Interface Design.
+    Score the following criteria (max 5 points each, total max 20 points):
+    1. Comprehensive Tool Docstrings: Tool functions must include clear, human-readable descriptions of their purpose and all parameters.
+    2. Descriptive Naming: Tool names must be highly specific and clear (e.g., 'create_critical_bug' instead of 'update_jira').
+    3. Explicit JSON Schemas: The code must utilize strict input and output schemas to validate tool arguments and constrain LLMs.
+    4. Guided Error Handling: Tool error returns must provide descriptive recovery instructions back to the LLM instead of just crashing.
+    Provide the score, evidence, and recovery instructions for this category.""",
     mode="single_turn",
     output_schema=CategoryGrade,
 )
@@ -66,7 +74,13 @@ tool_evaluator = Agent(
 memory_evaluator = Agent(
     name="memory_evaluator",
     model=sub_model,
-    instruction="Evaluate system instructions, history compaction, persistent state, and async operations. Output a CategoryGrade.",
+    instruction="""Evaluate the codebase for Context & Memory.
+    Score the following criteria (max 5 points each, total max 20 points):
+    1. Robust System Instructions: A clear "constitution" must be defined in the system prompt for persona, domain knowledge, and constraints.
+    2. History Compaction: Code must implement context bloat management (e.g., token-based truncation, sliding windows, summarization) via mechanisms and tools such as ADK compaction, memory bank, or Google Cloud context caching.
+    3. Persistent Session State: The agent must connect to a persistent database (vector store, Vertex AI Search, etc.) to efficiently retrieve information or manage conversational history across turns.
+    4. Async Memory Operations: Expensive memory generation and consolidation must be coded as background or async tasks to prevent UI blocking.
+    Provide the score, evidence, and recovery instructions for this category.""",
     mode="single_turn",
     output_schema=CategoryGrade,
 )
@@ -74,7 +88,13 @@ memory_evaluator = Agent(
 orchestration_evaluator = Agent(
     name="orchestration_evaluator",
     model=sub_model,
-    instruction="Evaluate multi-agent patterns, model routing, guardrails, and human-in-the-loop. Output a CategoryGrade.",
+    instruction="""Evaluate the codebase for Orchestration & Logic.
+    Score the following criteria (max 5 points each, total max 20 points):
+    1. Multi-Agent Patterns: Complex tasks must utilize proven design patterns (e.g., Coordinator, Sequential) rather than monolithic agents, implemented in ADK.
+    2. Strategic Model Routing: The codebase must route specific requests to the most appropriate model (e.g., Flash for fast tasks, Pro for planning).
+    3. Guardrails & Policy Plugins: Security and evaluation guardrails (e.g., self-evaluation) must be implemented via existing Google Cloud, ADK, or other agentic tech.
+    4. Human-in-the-Loop Hooks: High-stakes actions must include explicit code stops requiring human confirmation before execution.
+    Provide the score, evidence, and recovery instructions for this category.""",
     mode="single_turn",
     output_schema=CategoryGrade,
 )
@@ -82,7 +102,13 @@ orchestration_evaluator = Agent(
 observability_evaluator = Agent(
     name="observability_evaluator",
     model=sub_model,
-    instruction="Evaluate structured logging, outcome capture, tracing, and PII redaction. Output a CategoryGrade.",
+    instruction="""Evaluate the codebase for Observability & Tracing.
+    Score the following criteria (max 5 points each, total max 20 points):
+    1. Structured JSON Logging: The codebase must utilize structured logging libraries to capture rich metadata rather than simple prints.
+    2. Intent vs. Outcome Capture: Logs must explicitly record both the agent's intended action before execution and the actual outcome after.
+    3. Distributed Tracing: Implementation of OpenTelemetry (or equivalent) to link spans and trace a request from query to answer.
+    4. PII Redaction: Logging and memory pipelines must include active scrubbing mechanisms to redact sensitive data before storage (e.g., using Google Cloud APIs).
+    Provide the score, evidence, and recovery instructions for this category.""",
     mode="single_turn",
     output_schema=CategoryGrade,
 )
@@ -90,7 +116,12 @@ observability_evaluator = Agent(
 infra_evaluator = Agent(
     name="infra_evaluator",
     model=sub_model,
-    instruction="Evaluate automated evaluation suites, IaC, and secret management. Output a CategoryGrade.",
+    instruction="""Evaluate the codebase for Infrastructure & CI/CD.
+    Score the following criteria (max 5 points each, total max 15 points):
+    1. Automated Evaluation Suites: The repository must contain a testing harness (e.g., against a golden dataset) to statically measure agent regressions.
+    2. Infrastructure as Code: The project must include IaC configurations (like Terraform) to programmatically provision necessary resources, utilizing tools like Agents CLI.
+    3. Secure Secret Management: No hardcoded API keys; all tools and clients must leverage a secure injection method like Secret Manager.
+    Provide the score, evidence, and recovery instructions for this category.""",
     mode="single_turn",
     output_schema=CategoryGrade,
 )
@@ -123,7 +154,7 @@ def compile_report(node_input: dict[str, Any]) -> FinalReport:
         grades[name] = grade_obj
         total_score += grade_obj.score
 
-    summary = f"Evaluation completed. Total score: {total_score}."
+    summary = f"Evaluation completed. Total score: {total_score}/95."
     return FinalReport(
         total_score=total_score, grades=grades, overall_summary=summary
     )
@@ -202,7 +233,8 @@ assessment_coordinator = Agent(
     Your job is to coordinate the evaluation of a codebase or agent configuration.
     When you receive a URL or a codebase description, you must route it to the `evaluation_workflow` sub-agent.
     Once the workflow completes and returns the FinalReport, you must format the final output as a detailed markdown report for the user.
-    Include the total score, individual category grades (with score, evidence, and recovery instructions), and the overall summary.
+    Important: Include the total score exactly as returned (e.g., X/95), and list the individual category grades with their scores (out of 20 for Tools, Memory, Orchestration, Observability; and out of 15 for Infrastructure). Do not scale or modify the scores.
+    Include the evidence and recovery instructions for each category, and the overall summary.
     """,
     sub_agents=[evaluation_workflow_agent],
 )
