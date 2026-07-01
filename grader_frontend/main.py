@@ -55,27 +55,31 @@ db = firestore.AsyncClient(database=FIRESTORE_DATABASE)
 METADATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../deployment_metadata.json"))
 BACKEND_URL = "http://127.0.0.1:8000"  # Default local
 IS_REMOTE = False
-ENGINE_ID = None
+ENGINE_ID = os.environ.get("REMOTE_AGENT_RUNTIME_ID")
 GCP_PROJECT = None
 GCP_LOCATION = None
 
-if os.path.exists(METADATA_PATH):
+if not ENGINE_ID and os.path.exists(METADATA_PATH):
     try:
         with open(METADATA_PATH) as f:
             meta = json.load(f)
         ENGINE_ID = meta.get("remote_agent_runtime_id")
-        if ENGINE_ID:
-            # Parse project and location from engine_id
-            # projects/PROJECT/locations/LOCATION/reasoningEngines/ID
-            match = re.match(r"projects/([^/]+)/locations/([^/]+)", ENGINE_ID)
-            if match:
-                GCP_PROJECT = match.group(1)
-                GCP_LOCATION = match.group(2)
-                BACKEND_URL = f"https://{GCP_LOCATION}-aiplatform.googleapis.com/reasoningEngines/v1/{ENGINE_ID}/api"
-                IS_REMOTE = True
-                logger.info(f"Detected remote backend: {BACKEND_URL}")
     except Exception as e:
-        logger.warning(f"Failed to parse deployment_metadata.json: {e}. Falling back to local backend.")
+        logger.warning(f"Failed to parse deployment_metadata.json: {e}")
+
+if ENGINE_ID:
+    try:
+        # Parse project and location from engine_id
+        # projects/PROJECT/locations/LOCATION/reasoningEngines/ID
+        match = re.match(r"projects/([^/]+)/locations/([^/]+)", ENGINE_ID)
+        if match:
+            GCP_PROJECT = match.group(1)
+            GCP_LOCATION = match.group(2)
+            BACKEND_URL = f"https://{GCP_LOCATION}-aiplatform.googleapis.com/reasoningEngines/v1/{ENGINE_ID}/api"
+            IS_REMOTE = True
+            logger.info(f"Detected remote backend: {BACKEND_URL}")
+    except Exception as e:
+        logger.error(f"Failed to configure remote backend: {e}")
 
 if not IS_REMOTE:
     logger.info(f"Using local backend: {BACKEND_URL}")
