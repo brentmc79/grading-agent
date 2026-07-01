@@ -135,8 +135,16 @@ gcloud config set project <your-project-id>
 agents-cli deploy
 ```
 
-To add CI/CD and Terraform, run `agents-cli scaffold enhance`.
-To set up your production infrastructure, run `agents-cli infra cicd`.
+The project includes pre-configured **Terraform** configurations for Infrastructure as Code (IaC), located in [deployment/terraform/](file:///usr/local/google/home/brentcollier/src/local/adk_tutorial/agentops_assessment/grading-agent/deployment/terraform).
+
+*   `single-project`: For deploying to a single GCP project.
+*   `shared`: For shared infrastructure.
+
+To set up your production infrastructure using these configurations, run:
+```bash
+agents-cli infra single-project
+```
+or use `agents-cli infra cicd` for a full CI/CD pipeline.
 
 ## Observability
 
