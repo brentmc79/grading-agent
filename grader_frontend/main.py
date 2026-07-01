@@ -203,12 +203,18 @@ def check_for_hitl(event_data: dict) -> tuple[str | None, str | None]:
     content = event_data.get("content") or {}
     parts = content.get("parts") or []
     for part in parts:
-        func_call = part.get("function_call")
-        if func_call and func_call.get("name") == "adk_request_input":
+        # Support both snake_case and camelCase
+        func_call = part.get("function_call") or part.get("functionCall")
+        if func_call:
+            name = func_call.get("name")
             args = func_call.get("args") or {}
-            interrupt_id = args.get("interruptId") or args.get("interrupt_id")
-            message = args.get("message")
-            return interrupt_id, message
+            # Detect if it is the HITL tool
+            is_hitl_tool = name == "adk_request_input" or "interruptId" in args or "interrupt_id" in args
+            
+            if is_hitl_tool:
+                interrupt_id = args.get("interruptId") or args.get("interrupt_id") or func_call.get("id")
+                message = args.get("message")
+                return interrupt_id, message
     return None, None
 
 
@@ -243,6 +249,7 @@ async def stream_evaluation(session_id: str, url: str):
                             line_str = line.decode("utf-8").strip()
                             if line_str.startswith("data: "):
                                 event_data_raw = line_str[6:]
+                                logger.info(f"Raw event from backend: {event_data_raw[:200]}...")
                                 try:
                                     event_data = json.loads(event_data_raw)
                                     
