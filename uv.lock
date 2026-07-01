@@ -905,6 +905,23 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-firestore"
+version = "2.28.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "google-cloud-core" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/99/e2/7db007e30a84a2134a8c2880d3cfc30673f5f37f4e3b5b50ead6c3c61465/google_cloud_firestore-2.28.0.tar.gz", hash = "sha256:8211418bd746f3857046fc375138ddd0dfb023d5012545a9ade149be1461c6db", size = 651021, upload-time = "2026-06-25T23:39:43.754Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/96/6d58d540145b06d372a9ead34cf50ff17f35296cf9a8c43ccc141aa207ea/google_cloud_firestore-2.28.0-py3-none-any.whl", hash = "sha256:055daab3e5fb292f389b4e7d9e03dffb30f38a3463c23363f93d25569c933e59", size = 431943, upload-time = "2026-06-25T23:39:11.735Z" },
+]
+
+[[package]]
 name = "google-cloud-iam"
 version = "2.24.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1206,6 +1223,7 @@ dependencies = [
     { name = "gcsfs" },
     { name = "google-adk", extra = ["gcp"] },
     { name = "google-cloud-aiplatform", extra = ["agent-engines", "evaluation"] },
+    { name = "google-cloud-firestore" },
     { name = "google-cloud-logging" },
     { name = "opentelemetry-instrumentation-google-genai" },
     { name = "protobuf" },
@@ -1239,6 +1257,7 @@ requires-dist = [
     { name = "google-adk", extras = ["gcp"], specifier = ">=2.0.0,<3.0.0" },
     { name = "google-cloud-aiplatform", extras = ["evaluation"], marker = "extra == 'eval'", specifier = ">=1.156.0" },
     { name = "google-cloud-aiplatform", extras = ["evaluation", "agent-engines"], specifier = ">=1.156.0" },
+    { name = "google-cloud-firestore", specifier = ">=2.19.0" },
     { name = "google-cloud-logging", specifier = ">=3.12.0,<4.0.0" },
     { name = "opentelemetry-instrumentation-google-genai", specifier = ">=0.1.0,<1.0.0" },
     { name = "protobuf", specifier = ">=6.31.1,<7.0.0" },

@@ -29,11 +29,14 @@ from google.genai import types
 
 import os
 import google.auth
+from google.cloud import firestore
 
 _, project_id = google.auth.default()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
 os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
+
+FIRESTORE_DATABASE = os.environ.get("FIRESTORE_DATABASE", "(default)")
 
 
 # 1. Define Pydantic Models
@@ -160,6 +163,51 @@ def compile_report(node_input: dict[str, Any]) -> FinalReport:
     )
 
 
+collect_final_data = JoinNode(name="collect_final_data")
+
+
+@node
+def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport:
+    """Stores the evaluation report in Firestore."""
+    url = node_input.get("prep_node")
+    final_report = node_input.get("compile_report")
+
+    if not url or not final_report:
+        raise ValueError("Missing url or final_report in store_report input")
+
+    if isinstance(final_report, dict):
+        final_report_obj = FinalReport(**final_report)
+    else:
+        final_report_obj = final_report
+
+    session_id = ctx.session.id
+
+    try:
+        db = firestore.Client(database=FIRESTORE_DATABASE)
+        doc_ref = db.collection("evaluations").document(session_id)
+        doc_ref.set({
+            "session_id": session_id,
+            "url": url,
+            "total_score": final_report_obj.total_score,
+            "grades": {
+                name: {
+                    "score": grade.score,
+                    "evidence": grade.evidence,
+                    "recovery_instructions": grade.recovery_instructions,
+                }
+                for name, grade in final_report_obj.grades.items()
+            },
+            "overall_summary": final_report_obj.overall_summary,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        })
+        print(f"Stored report in Firestore with session ID: {session_id}")
+    except Exception as e:
+        print(f"Failed to store report in Firestore: {e}")
+        raise e
+
+    return final_report_obj
+
+
 # 4. Define Workflow
 evaluation_workflow = Workflow(
     name="evaluation_workflow",
@@ -187,6 +235,9 @@ evaluation_workflow = Workflow(
             collect_grades,
         ),
         (collect_grades, compile_report),
+        (prep_node, collect_final_data),
+        (compile_report, collect_final_data),
+        (collect_final_data, store_report),
     ],
 )
 
