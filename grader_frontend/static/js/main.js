@@ -91,7 +91,7 @@ function formatAgentEvent(eventData) {
 }
 
 // Connect to SSE Stream
-function connectStream(sessionId, url) {
+function connectStream(sessionId, url, isResume = false, responseText = null, interruptId = null) {
     if (eventSource) {
         eventSource.close();
     }
@@ -100,7 +100,12 @@ function connectStream(sessionId, url) {
     activeUrl = url;
     showTerminal(parseRepoName(url) + " - evaluation.log");
 
-    const streamUrl = `/api/stream/${sessionId}?url=${encodeURIComponent(url)}`;
+    let streamUrl = `/api/stream/${sessionId}?url=${encodeURIComponent(url)}`;
+    if (isResume) {
+        streamUrl += `&resume=true&response=${encodeURIComponent(responseText)}&interrupt_id=${encodeURIComponent(interruptId)}`;
+    }
+    
+    logger("Connecting to stream: " + streamUrl);
     eventSource = new EventSource(streamUrl);
 
     eventSource.onmessage = (event) => {
@@ -258,28 +263,12 @@ async function handleHitlResponse(responseValue) {
     hideHitlModal();
     logToTerminal(`Sending confirmation response: ${responseValue}...`);
     
-    try {
-        const response = await fetch("/api/resume", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                session_id: activeSessionId,
-                interrupt_id: currentInterruptId,
-                response: responseValue
-            }),
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || "Failed to resume");
-        }
-
-        logToTerminal("Confirmation sent. Reconnecting stream...", "info");
-        // Reconnect to the stream to continue receiving progress
-        connectStream(activeSessionId, activeUrl);
-    } catch (error) {
-        logToTerminal(`Failed to send confirmation: ${error.message}`, "error");
-    }
+    // Close existing stream if any
+    if (eventSource) eventSource.close();
+    
+    logToTerminal("Resuming evaluation...", "info");
+    // Reconnect to the stream with resume parameters
+    connectStream(activeSessionId, activeUrl, true, responseValue, currentInterruptId);
 }
 
 // Fetch Submissions and Render Grid
