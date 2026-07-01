@@ -29,8 +29,36 @@ from google.adk.events.request_input import RequestInput
 from google.genai import types
 
 import os
+import logging
+import json
+import sys
 import google.auth
 from google.cloud import firestore
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        
+        if hasattr(record, "extra_fields"):
+            log_entry.update(record.extra_fields)
+            
+        return json.dumps(log_entry)
+
+logger = logging.getLogger("grading_agent")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JsonFormatter())
+    logger.addHandler(handler)
+    logger.propagate = False
 
 _, project_id = google.auth.default()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
@@ -135,6 +163,7 @@ infra_evaluator = Agent(
 @node(rerun_on_resume=True)
 async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None]:
     """Prepares the input and asks for confirmation if it's a GitHub URL."""
+    logger.info("prep_node started", extra={"extra_fields": {"node_input": str(node_input)}})
     target_url = ctx.state.get("target_url")
 
     if not target_url:
@@ -148,9 +177,11 @@ async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None
         
         target_url = text
         yield Event(state={"target_url": target_url})
+        logger.info("prep_node: target_url initialized", extra={"extra_fields": {"target_url": target_url}})
 
     if "github.com" in target_url:
         if not ctx.resume_inputs or "confirm_eval" not in ctx.resume_inputs:
+            logger.info("prep_node: pausing for user confirmation", extra={"extra_fields": {"target_url": target_url}})
             yield RequestInput(
                 interrupt_id="confirm_eval",
                 message=f"Do you want to proceed with evaluating the repository: {target_url}? (yes/no)",
@@ -164,7 +195,9 @@ async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None
             confirmation = str(confirmation_raw)
 
         confirmation = confirmation.strip().lower()
+        logger.info("prep_node: resumed with confirmation", extra={"extra_fields": {"confirmation": confirmation}})
         if confirmation not in ["yes", "y"]:
+            logger.info("prep_node: evaluation cancelled by user", extra={"extra_fields": {"target_url": target_url}})
             yield Event(
                 content=types.Content(
                     role="model",
@@ -173,6 +206,7 @@ async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None
             )
             return
 
+    logger.info("prep_node completed", extra={"extra_fields": {"target_url": target_url}})
     yield Event(output=target_url)
 
 
@@ -182,6 +216,8 @@ collect_grades = JoinNode(name="collect_grades")
 @node
 def compile_report(node_input: dict[str, Any]) -> FinalReport:
     """Compiles the final report from individual grades."""
+    categories = list(node_input.keys())
+    logger.info("compile_report started", extra={"extra_fields": {"categories": categories}})
     grades = {}
     total_score = 0
     for name, grade in node_input.items():
@@ -193,6 +229,7 @@ def compile_report(node_input: dict[str, Any]) -> FinalReport:
         total_score += grade_obj.score
 
     summary = f"Evaluation completed. Total score: {total_score}/95."
+    logger.info("compile_report completed", extra={"extra_fields": {"total_score": total_score}})
     return FinalReport(
         total_score=total_score, grades=grades, overall_summary=summary
     )
@@ -206,16 +243,18 @@ def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport:
     """Stores the evaluation report in Firestore."""
     url = node_input.get("prep_node")
     final_report = node_input.get("compile_report")
+    session_id = ctx.session.id
+
+    logger.info("store_report started", extra={"extra_fields": {"session_id": session_id, "url": url}})
 
     if not url or not final_report:
+        logger.error("store_report: missing url or final_report in input", extra={"extra_fields": {"session_id": session_id}})
         raise ValueError("Missing url or final_report in store_report input")
 
     if isinstance(final_report, dict):
         final_report_obj = FinalReport(**final_report)
     else:
         final_report_obj = final_report
-
-    session_id = ctx.session.id
 
     try:
         db = firestore.Client(database=FIRESTORE_DATABASE)
@@ -235,9 +274,9 @@ def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport:
             "overall_summary": final_report_obj.overall_summary,
             "timestamp": firestore.SERVER_TIMESTAMP,
         })
-        print(f"Stored report in Firestore with session ID: {session_id}")
+        logger.info("store_report: successfully stored in Firestore", extra={"extra_fields": {"session_id": session_id}})
     except Exception as e:
-        print(f"Failed to store report in Firestore: {e}")
+        logger.error("store_report: failed to store in Firestore", exc_info=True, extra={"extra_fields": {"session_id": session_id}})
         raise e
 
     return final_report_obj
