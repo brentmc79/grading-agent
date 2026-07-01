@@ -193,6 +193,24 @@ async def submit_evaluation(payload: SubmitRequest, response: Response):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
+def check_for_hitl(event_data: dict) -> tuple[str | None, str | None]:
+    """Detects if the event is a HITL checkpoint (local or remote/A2A)."""
+    # 1. Raw ADK format
+    if "interrupt_id" in event_data:
+        return event_data["interrupt_id"], event_data.get("message")
+        
+    # 2. A2A format (function call to adk_request_input)
+    content = event_data.get("content") or {}
+    parts = content.get("parts") or []
+    for part in parts:
+        func_call = part.get("function_call")
+        if func_call and func_call.get("name") == "adk_request_input":
+            args = func_call.get("args") or {}
+            interrupt_id = args.get("interruptId") or args.get("interrupt_id")
+            message = args.get("message")
+            return interrupt_id, message
+    return None, None
+
 
 @app.get("/api/stream/{session_id}")
 async def stream_evaluation(session_id: str, url: str):
@@ -228,10 +246,14 @@ async def stream_evaluation(session_id: str, url: str):
                                 try:
                                     event_data = json.loads(event_data_raw)
                                     
-                                    # Check if it is a RequestInput (HITL)
-                                    # ADK yields RequestInput which might have 'interrupt_id'
-                                    if "interrupt_id" in event_data:
-                                        yield f"event: checkpoint\ndata: {event_data_raw}\n\n"
+                                    # Detect HITL (local or remote/A2A)
+                                    interrupt_id, hitl_msg = check_for_hitl(event_data)
+                                    if interrupt_id:
+                                        normalized_checkpoint = {
+                                            "interrupt_id": interrupt_id,
+                                            "message": hitl_msg or "Confirmation required to proceed."
+                                        }
+                                        yield f"event: checkpoint\ndata: {json.dumps(normalized_checkpoint)}\n\n"
                                     # Check if it is the final report from the evaluation workflow
                                     elif event_data.get("author") == "evaluation_workflow" and "output" in event_data and isinstance(event_data["output"], dict) and "total_score" in event_data["output"]:
                                         yield f"event: complete\ndata: {event_data_raw}\n\n"
