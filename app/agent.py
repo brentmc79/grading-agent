@@ -27,6 +27,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
 from google.genai import types
+from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 
 import os
 import logging
@@ -59,6 +60,9 @@ if not logger.handlers:
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
     logger.propagate = False
+
+# Instrument Gemini client for tracing
+GoogleGenAiSdkInstrumentor().instrument()
 
 _, project_id = google.auth.default()
 os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
