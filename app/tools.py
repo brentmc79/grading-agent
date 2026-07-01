@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
+from typing import Annotated
 from google.adk.tools import ToolContext
 from pydantic import BaseModel, Field
 
@@ -175,36 +176,19 @@ def cleanup_repository(repo_root: str) -> None:
         shutil.rmtree(repo_root, ignore_errors=True)
 
 
-class ListDirectoryInput(BaseModel):
-    relative_path: str = Field(
-        default="",
-        description="The path to list, relative to the repository root. Use empty string '' for the root directory.",
-    )
-
-
-class ReadFileInput(BaseModel):
-    file_path: str = Field(
-        ..., description="The path to the file, relative to the repository root."
-    )
-    max_chars: int = Field(
-        default=20000,
-        description="The maximum number of characters to return (default 20000).",
-    )
-
-
-class SearchCodeInput(BaseModel):
-    query: str = Field(..., description="The string to search for.")
-    extension: str | None = Field(
-        default=None,
-        description="Optional file extension to restrict the search (e.g., 'py', 'tf').",
-    )
-
-
-def list_directory(args: ListDirectoryInput, tool_context: ToolContext) -> list[str]:
+def list_directory(
+    relative_path: Annotated[
+        str,
+        Field(
+            description="The path to list, relative to the repository root. Use empty string '' for the root directory."
+        ),
+    ] = "",
+    tool_context: ToolContext = None,
+) -> list[str]:
     """Lists the contents of a directory within the repository.
 
     Args:
-        args: The input arguments containing relative_path.
+        relative_path: The path to list, relative to the repository root.
         tool_context: The tool context containing session state.
 
     Returns:
@@ -217,7 +201,6 @@ def list_directory(args: ListDirectoryInput, tool_context: ToolContext) -> list[
             return [
                 "Error: Repository root not found in state. Please ensure the repository is initialized."
             ]
-        relative_path = args.relative_path
         target_path = _resolve_safe_path(repo_root, relative_path)
         if not os.path.exists(target_path):
             return [
@@ -233,11 +216,24 @@ def list_directory(args: ListDirectoryInput, tool_context: ToolContext) -> list[
         return [f"Error: {e!s}. Ensure the path is within the repository."]
 
 
-def read_file(args: ReadFileInput, tool_context: ToolContext) -> str:
+def read_file(
+    file_path: Annotated[
+        str,
+        Field(description="The path to the file, relative to the repository root."),
+    ],
+    max_chars: Annotated[
+        int,
+        Field(
+            description="The maximum number of characters to return (default 20000)."
+        ),
+    ] = 20000,
+    tool_context: ToolContext = None,
+) -> str:
     """Reads the content of a file within the repository.
 
     Args:
-        args: The input arguments containing file_path and max_chars.
+        file_path: The path to the file, relative to the repository root.
+        max_chars: The maximum number of characters to return.
         tool_context: The tool context containing session state.
 
     Returns:
@@ -248,8 +244,6 @@ def read_file(args: ReadFileInput, tool_context: ToolContext) -> str:
         repo_root = tool_context.state.get("local_path")
         if not repo_root:
             return "Error: Repository root not found in state. Please ensure the repository is initialized."
-        file_path = args.file_path
-        max_chars = args.max_chars
         target_path = _resolve_safe_path(repo_root, file_path)
         if not os.path.exists(target_path):
             return f"Error: File {file_path} does not exist. Use list_directory to verify the file location."
@@ -271,11 +265,21 @@ def read_file(args: ReadFileInput, tool_context: ToolContext) -> str:
         return f"Error: {e!s}. Ensure the file is a text file and you have permission to read it."
 
 
-def search_code(args: SearchCodeInput, tool_context: ToolContext) -> list[str]:
+def search_code(
+    query: Annotated[str, Field(description="The string to search for.")],
+    extension: Annotated[
+        str | None,
+        Field(
+            description="Optional file extension to restrict the search (e.g., 'py', 'tf')."
+        ),
+    ] = None,
+    tool_context: ToolContext = None,
+) -> list[str]:
     """Searches for a query string in all files within the repository.
 
     Args:
-        args: The input arguments containing query and extension.
+        query: The string to search for.
+        extension: Optional file extension to restrict the search.
         tool_context: The tool context containing session state.
 
     Returns:
@@ -288,8 +292,6 @@ def search_code(args: SearchCodeInput, tool_context: ToolContext) -> list[str]:
         return [
             "Error: Repository root not found in state. Please ensure the repository is initialized."
         ]
-    query = args.query
-    extension = args.extension
     query_lower = query.lower()
     count = 0
     max_results = 50

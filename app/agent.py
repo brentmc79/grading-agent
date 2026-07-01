@@ -21,8 +21,10 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from google.adk.agents import Agent, BaseAgent, InvocationContext, Context
 from google.adk.apps import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.models import Gemini
-from google.adk.workflow import Workflow, node, JoinNode, START
+from google.adk.workflow import Workflow, node, JoinNode, START, Edge
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.request_input import RequestInput
@@ -136,122 +138,184 @@ class FinalReport(BaseModel):
 
 
 # 2. Define Sub-agents
-# Using gemini-2.5-flash for sub-agents as a fast, capable default
-sub_model = Gemini(model="gemini-2.5-flash")
+model_flash = Gemini(model="gemini-2.5-flash")
+model_pro = Gemini(model="gemini-2.5-pro")
 
-tool_evaluator = Agent(
-    name="tool_evaluator",
-    model=sub_model,
-    instruction="""You are an expert evaluator for Tool & Interface Design.
-    Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
-    You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
-    1. Comprehensive Tool Docstrings: Tool functions must include clear, human-readable descriptions of their purpose and all parameters.
-    2. Descriptive Naming: Tool names must be highly specific and clear (e.g., 'create_critical_bug' instead of 'update_jira').
-    3. Explicit JSON Schemas: The code must utilize strict input and output schemas to validate tool arguments and constrain LLMs (e.g. using Pydantic).
-    4. Guided Error Handling: Tool error returns must provide descriptive recovery instructions back to the LLM instead of just crashing.
-    
-    CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
-    Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
-    
-    Start by listing the directory to find where tools are defined, then read the files to inspect the tool definitions.
-    Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
-    You must output a CategoryGrade JSON object.
-    """,
+TOOL_EVALUATOR_INSTRUCTION = """You are an expert evaluator for Tool & Interface Design.
+Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
+You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
+1. Comprehensive Tool Docstrings: Tool functions must include clear, human-readable descriptions of their purpose and all parameters.
+2. Descriptive Naming: Tool names must be highly specific and clear (e.g., 'create_critical_bug' instead of 'update_jira').
+3. Explicit JSON Schemas: The code must utilize strict input and output schemas to validate tool arguments and constrain LLMs (e.g. using Pydantic).
+4. Guided Error Handling: Tool error returns must provide descriptive recovery instructions back to the LLM instead of just crashing.
+
+CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
+Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
+
+Start by listing the directory to find where tools are defined, then read the files to inspect the tool definitions.
+Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
+You must output a CategoryGrade JSON object.
+"""
+
+MEMORY_EVALUATOR_INSTRUCTION = """You are an expert evaluator for Context & Memory.
+Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
+You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
+1. Robust System Instructions: A clear "constitution" must be defined in the system prompt for persona, domain knowledge, and constraints.
+2. History Compaction: Code must implement context bloat management (e.g., token-based truncation, sliding windows, summarization) via mechanisms and tools such as ADK compaction, memory bank, or Google Cloud context caching.
+3. Persistent Session State: The agent must connect to a persistent database (vector store, Vertex AI Search, Firestore, etc.) to efficiently retrieve information or manage conversational history across turns.
+4. Async Memory Operations: Expensive memory generation and consolidation must be coded as background or async tasks to prevent UI blocking.
+
+CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
+Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
+
+Inspect the agent configuration, prompts, and database integrations.
+Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
+You must output a CategoryGrade JSON object.
+"""
+
+ORCHESTRATION_EVALUATOR_INSTRUCTION = """You are an expert evaluator for Orchestration & Logic.
+Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
+You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
+1. Multi-Agent Patterns: Complex tasks must utilize proven design patterns (e.g., Coordinator, Sequential) rather than monolithic agents, implemented in ADK.
+2. Strategic Model Routing: The codebase must route specific requests to the most appropriate model (e.g., Flash for fast tasks, Pro for planning).
+3. Guardrails & Policy Plugins: Security and evaluation guardrails (e.g., self-evaluation, input validation) must be implemented.
+4. Human-in-the-Loop Hooks: High-stakes actions must include explicit code stops requiring human confirmation before execution (e.g. using RequestInput).
+
+CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
+Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
+
+Inspect the agent definitions, workflows, and coordinator logic.
+Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
+You must output a CategoryGrade JSON object.
+"""
+
+OBSERVABILITY_EVALUATOR_INSTRUCTION = """You are an expert evaluator for Observability & Tracing.
+Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
+You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
+1. Structured JSON Logging: The codebase must utilize structured logging libraries to capture rich metadata rather than simple prints.
+2. Intent vs. Outcome Capture: Logs must explicitly record both the agent's intended action before execution and the actual outcome after.
+3. Distributed Tracing: Implementation of OpenTelemetry (or equivalent) to link spans and trace a request from query to answer.
+4. PII Redaction: Logging and memory pipelines must include active scrubbing mechanisms to redact sensitive data before storage (e.g., using Google Cloud APIs).
+
+CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
+Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
+
+Inspect the logging configuration and tracing setup in the code.
+Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
+You must output a CategoryGrade JSON object.
+"""
+
+INFRA_EVALUATOR_INSTRUCTION = """You are an expert evaluator for Infrastructure & CI/CD.
+Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
+You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 15 points):
+1. Automated Evaluation Suites: The repository must contain a testing harness (e.g., against a golden dataset using agents-cli eval) to statically measure agent regressions.
+2. Infrastructure as Code: The project must include IaC configurations (like Terraform) to programmatically provision necessary resources.
+3. Secure Secret Management: No hardcoded API keys; all tools and clients must leverage a secure injection method like Secret Manager or environment variables.
+
+CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
+Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
+
+Inspect the tests, deployment configurations, Terraform files, and secret handling.
+Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
+You must output a CategoryGrade JSON object.
+"""
+
+# Flash Evaluators
+tool_evaluator_flash = Agent(
+    name="tool_evaluator_flash",
+    model=model_flash,
+    instruction=TOOL_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+memory_evaluator_flash = Agent(
+    name="memory_evaluator_flash",
+    model=model_flash,
+    instruction=MEMORY_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+orchestration_evaluator_flash = Agent(
+    name="orchestration_evaluator_flash",
+    model=model_flash,
+    instruction=ORCHESTRATION_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+observability_evaluator_flash = Agent(
+    name="observability_evaluator_flash",
+    model=model_flash,
+    instruction=OBSERVABILITY_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+infra_evaluator_flash = Agent(
+    name="infra_evaluator_flash",
+    model=model_flash,
+    instruction=INFRA_EVALUATOR_INSTRUCTION,
     mode="single_turn",
     output_schema=CategoryGrade,
     tools=[list_directory, read_file, search_code],
 )
 
-memory_evaluator = Agent(
-    name="memory_evaluator",
-    model=sub_model,
-    instruction="""You are an expert evaluator for Context & Memory.
-    Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
-    You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
-    1. Robust System Instructions: A clear "constitution" must be defined in the system prompt for persona, domain knowledge, and constraints.
-    2. History Compaction: Code must implement context bloat management (e.g., token-based truncation, sliding windows, summarization) via mechanisms and tools such as ADK compaction, memory bank, or Google Cloud context caching.
-    3. Persistent Session State: The agent must connect to a persistent database (vector store, Vertex AI Search, Firestore, etc.) to efficiently retrieve information or manage conversational history across turns.
-    4. Async Memory Operations: Expensive memory generation and consolidation must be coded as background or async tasks to prevent UI blocking.
-    
-    CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
-    Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
-    
-    Inspect the agent configuration, prompts, and database integrations.
-    Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
-    You must output a CategoryGrade JSON object.
-    """,
+# Pro Evaluators
+tool_evaluator_pro = Agent(
+    name="tool_evaluator_pro",
+    model=model_pro,
+    instruction=TOOL_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+memory_evaluator_pro = Agent(
+    name="memory_evaluator_pro",
+    model=model_pro,
+    instruction=MEMORY_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+orchestration_evaluator_pro = Agent(
+    name="orchestration_evaluator_pro",
+    model=model_pro,
+    instruction=ORCHESTRATION_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+observability_evaluator_pro = Agent(
+    name="observability_evaluator_pro",
+    model=model_pro,
+    instruction=OBSERVABILITY_EVALUATOR_INSTRUCTION,
+    mode="single_turn",
+    output_schema=CategoryGrade,
+    tools=[list_directory, read_file, search_code],
+)
+infra_evaluator_pro = Agent(
+    name="infra_evaluator_pro",
+    model=model_pro,
+    instruction=INFRA_EVALUATOR_INSTRUCTION,
     mode="single_turn",
     output_schema=CategoryGrade,
     tools=[list_directory, read_file, search_code],
 )
 
-orchestration_evaluator = Agent(
-    name="orchestration_evaluator",
-    model=sub_model,
-    instruction="""You are an expert evaluator for Orchestration & Logic.
-    Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
-    You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
-    1. Multi-Agent Patterns: Complex tasks must utilize proven design patterns (e.g., Coordinator, Sequential) rather than monolithic agents, implemented in ADK.
-    2. Strategic Model Routing: The codebase must route specific requests to the most appropriate model (e.g., Flash for fast tasks, Pro for planning).
-    3. Guardrails & Policy Plugins: Security and evaluation guardrails (e.g., self-evaluation, input validation) must be implemented.
-    4. Human-in-the-Loop Hooks: High-stakes actions must include explicit code stops requiring human confirmation before execution (e.g. using RequestInput).
-    
-    CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
-    Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
-    
-    Inspect the agent definitions, workflows, and coordinator logic.
-    Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
-    You must output a CategoryGrade JSON object.
-    """,
-    mode="single_turn",
-    output_schema=CategoryGrade,
-    tools=[list_directory, read_file, search_code],
-)
 
-observability_evaluator = Agent(
-    name="observability_evaluator",
-    model=sub_model,
-    instruction="""You are an expert evaluator for Observability & Tracing.
-    Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
-    You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 20 points):
-    1. Structured JSON Logging: The codebase must utilize structured logging libraries to capture rich metadata rather than simple prints.
-    2. Intent vs. Outcome Capture: Logs must explicitly record both the agent's intended action before execution and the actual outcome after.
-    3. Distributed Tracing: Implementation of OpenTelemetry (or equivalent) to link spans and trace a request from query to answer.
-    4. PII Redaction: Logging and memory pipelines must include active scrubbing mechanisms to redact sensitive data before storage (e.g., using Google Cloud APIs).
-    
-    CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
-    Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
-    
-    Inspect the logging configuration and tracing setup in the code.
-    Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
-    You must output a CategoryGrade JSON object.
-    """,
-    mode="single_turn",
-    output_schema=CategoryGrade,
-    tools=[list_directory, read_file, search_code],
-)
-
-infra_evaluator = Agent(
-    name="infra_evaluator",
-    model=sub_model,
-    instruction="""You are an expert evaluator for Infrastructure & CI/CD.
-    Your input is the path to the repository. The provided tools (`list_directory`, `read_file`, `search_code`) are configured to automatically operate on this repository.
-    You must use these tools to inspect the codebase and evaluate it against the following criteria (max 5 points each, total max 15 points):
-    1. Automated Evaluation Suites: The repository must contain a testing harness (e.g., against a golden dataset using agents-cli eval) to statically measure agent regressions.
-    2. Infrastructure as Code: The project must include IaC configurations (like Terraform) to programmatically provision necessary resources.
-    3. Secure Secret Management: No hardcoded API keys; all tools and clients must leverage a secure injection method like Secret Manager or environment variables.
-    
-    CRITICAL: You must ONLY use evidence from the files you have actually read in the repository during this turn. Do NOT refer to any files, paths, or code that do not exist in this repository. Any evidence must be verifiable by reading the files.
-    Call the tools directly using the function calling interface. Do NOT write Python code (e.g., using 'print' or 'default_api') to call them.
-    
-    Inspect the tests, deployment configurations, Terraform files, and secret handling.
-    Provide the score, evidence (quoting file names and line numbers if possible), and recovery instructions for this category.
-    You must output a CategoryGrade JSON object.
-    """,
-    mode="single_turn",
-    output_schema=CategoryGrade,
-    tools=[list_directory, read_file, search_code],
-)
+def _count_files(directory: str) -> int:
+    """Counts the number of files in a directory, skipping common ignored dirs."""
+    count = 0
+    for root, _, files in os.walk(directory):
+        if any(
+            part in root.split(os.sep)
+            for part in [".git", ".venv", "node_modules", "__pycache__", ".adk"]
+        ):
+            continue
+        count += len(files)
+    return count
 
 
 # 3. Define Nodes
@@ -362,6 +426,19 @@ async def prep_node(
     try:
         local_path = clone_repository(target_url, ctx.session.id)
         ctx.state["local_path"] = local_path
+        logger.info(
+            "prep_node: successfully cloned repository",
+            extra={"extra_fields": {"local_path": local_path}},
+        )
+        
+        # Determine complexity
+        file_count = _count_files(local_path)
+        is_complex = file_count > 20
+        ctx.state["is_complex"] = is_complex
+        logger.info(
+            f"Repository complexity: file_count={file_count}, is_complex={is_complex}",
+            extra={"extra_fields": {"file_count": file_count, "is_complex": is_complex}},
+        )
     except Exception as e:
         logger.error(
             "prep_node: failed to clone repository",
@@ -383,10 +460,25 @@ async def prep_node(
         "prep_node completed",
         extra={"extra_fields": {"target_url": target_url, "local_path": local_path}},
     )
-    yield Event(output=local_path)
+    route = "complex" if is_complex else "simple"
+    yield Event(output=local_path, route=route)
 
 
-collect_grades = JoinNode(name="collect_grades")
+collect_grades_flash = JoinNode(name="collect_grades_flash")
+collect_grades_pro = JoinNode(name="collect_grades_pro")
+
+NAME_MAP = {
+    "tool_evaluator_flash": "Tools",
+    "tool_evaluator_pro": "Tools",
+    "memory_evaluator_flash": "Memory",
+    "memory_evaluator_pro": "Memory",
+    "orchestration_evaluator_flash": "Orchestration",
+    "orchestration_evaluator_pro": "Orchestration",
+    "observability_evaluator_flash": "Observability",
+    "observability_evaluator_pro": "Observability",
+    "infra_evaluator_flash": "Infrastructure",
+    "infra_evaluator_pro": "Infrastructure",
+}
 
 
 @node
@@ -403,7 +495,9 @@ def compile_report(node_input: dict[str, Any]) -> FinalReport:
             grade_obj = CategoryGrade(**grade)
         else:
             grade_obj = grade
-        grades[name] = grade_obj
+        
+        standard_name = NAME_MAP.get(name, name)
+        grades[standard_name] = grade_obj
         total_score += grade_obj.score
 
     summary = f"Evaluation completed. Total score: {total_score}/95."
@@ -495,27 +589,42 @@ evaluation_workflow = Workflow(
     description="Evaluates a codebase or agent configuration and returns a structured final report.",
     edges=[
         (START, prep_node),
+        # Simple path (Flash)
+        Edge(from_node=prep_node, to_node=tool_evaluator_flash, route="simple"),
+        Edge(from_node=prep_node, to_node=memory_evaluator_flash, route="simple"),
+        Edge(from_node=prep_node, to_node=orchestration_evaluator_flash, route="simple"),
+        Edge(from_node=prep_node, to_node=observability_evaluator_flash, route="simple"),
+        Edge(from_node=prep_node, to_node=infra_evaluator_flash, route="simple"),
+        # Complex path (Pro)
+        Edge(from_node=prep_node, to_node=tool_evaluator_pro, route="complex"),
+        Edge(from_node=prep_node, to_node=memory_evaluator_pro, route="complex"),
+        Edge(from_node=prep_node, to_node=orchestration_evaluator_pro, route="complex"),
+        Edge(from_node=prep_node, to_node=observability_evaluator_pro, route="complex"),
+        Edge(from_node=prep_node, to_node=infra_evaluator_pro, route="complex"),
+        # Collect Flash
         (
-            prep_node,
             (
-                tool_evaluator,
-                memory_evaluator,
-                orchestration_evaluator,
-                observability_evaluator,
-                infra_evaluator,
+                tool_evaluator_flash,
+                memory_evaluator_flash,
+                orchestration_evaluator_flash,
+                observability_evaluator_flash,
+                infra_evaluator_flash,
             ),
+            collect_grades_flash,
         ),
+        # Collect Pro
         (
             (
-                tool_evaluator,
-                memory_evaluator,
-                orchestration_evaluator,
-                observability_evaluator,
-                infra_evaluator,
+                tool_evaluator_pro,
+                memory_evaluator_pro,
+                orchestration_evaluator_pro,
+                observability_evaluator_pro,
+                infra_evaluator_pro,
             ),
-            collect_grades,
+            collect_grades_pro,
         ),
-        (collect_grades, compile_report),
+        (collect_grades_flash, compile_report),
+        (collect_grades_pro, compile_report),
         (prep_node, collect_final_data),
         (compile_report, collect_final_data),
         (collect_final_data, store_report),
@@ -592,4 +701,9 @@ root_agent = assessment_coordinator
 app = App(
     root_agent=root_agent,
     name="app",
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=10,
+        overlap_size=2,
+        summarizer=LlmEventSummarizer(llm=Gemini(model="gemini-2.5-flash")),
+    ),
 )
