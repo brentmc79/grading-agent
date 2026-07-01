@@ -260,13 +260,13 @@ async def stream_evaluation(
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(run_sse_url, headers=headers, json=data) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
+                async with session.post(run_sse_url, headers=headers, json=data) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
                         yield f"event: error\ndata: {json.dumps({'message': f'Backend stream failed: {error_text}'})}\n\n"
                         return
                     
-                    async for line in response.content:
+                    async for line in resp.content:
                         if line:
                             line_str = line.decode("utf-8").strip()
                             if line_str.startswith("data: "):
@@ -291,6 +291,9 @@ async def stream_evaluation(
                                 except json.JSONDecodeError:
                                     # If not JSON, just forward as raw data
                                     yield f"data: {event_data_raw}\n\n"
+            # Backend stream finished normally
+            logger.info("Backend stream finished normally")
+            yield f"event: close\ndata: {json.dumps({'message': 'Stream finished'})}\n\n"
         except Exception as e:
             logger.error(f"Error in event generator: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"

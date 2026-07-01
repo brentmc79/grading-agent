@@ -3,6 +3,11 @@
 let eventSource = null;
 let activeSessionId = null;
 let activeUrl = null;
+let isUnloading = false;
+
+window.addEventListener("beforeunload", () => {
+    isUnloading = true;
+});
 
 document.addEventListener("DOMContentLoaded", () => {
     init();
@@ -25,6 +30,13 @@ function init() {
         // We will check if this session is already completed when we fetch submissions.
         // If it is not in the completed list, we will try to reconnect.
     }
+}
+
+function clearSession() {
+    activeSessionId = null;
+    activeUrl = null;
+    document.cookie = "grader_session_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+    localStorage.removeItem("active_url");
 }
 
 // Logger helper for terminal
@@ -151,8 +163,7 @@ function connectStream(sessionId, url, isResume = false, responseText = null, in
         }
         
         eventSource.close();
-        activeSessionId = null;
-        activeUrl = null;
+        clearSession();
         
         document.getElementById("status-text").textContent = "completed";
         document.getElementById("status-text").className = "text-emerald-400 font-mono";
@@ -163,7 +174,25 @@ function connectStream(sessionId, url, isResume = false, responseText = null, in
         fetchSubmissions();
     });
 
+    eventSource.addEventListener("close", (event) => {
+        logger("Stream finished");
+        eventSource.close();
+        clearSession();
+        
+        const statusText = document.getElementById("status-text").textContent;
+        if (statusText === "running") {
+            document.getElementById("status-text").textContent = "completed";
+            document.getElementById("status-text").className = "text-emerald-400 font-mono";
+            document.getElementById("status-spinner").className = "fa-solid fa-circle-check text-xs text-emerald-400";
+            logToTerminal("Evaluation finished.", "info");
+        }
+        document.getElementById("close-terminal-btn").classList.remove("hidden");
+        fetchSubmissions();
+    });
+
     eventSource.onerror = (event) => {
+        if (isUnloading) return;
+        
         // If we are waiting for HITL, the connection closing is expected, so don't show error.
         if (document.getElementById("status-text").textContent === "waiting for input") {
             return;
@@ -172,14 +201,12 @@ function connectStream(sessionId, url, isResume = false, responseText = null, in
         logger("SSE Error occurred");
         logToTerminal("Connection to evaluation stream lost or failed.", "error");
         eventSource.close();
+        clearSession();
         
         document.getElementById("status-text").textContent = "failed";
         document.getElementById("status-text").className = "text-red-400 font-mono";
         document.getElementById("status-spinner").className = "fa-solid fa-circle-xmark text-xs text-red-400";
         document.getElementById("close-terminal-btn").classList.remove("hidden");
-        
-        activeSessionId = null;
-        activeUrl = null;
     };
 }
 
