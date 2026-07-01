@@ -276,10 +276,10 @@ async def stream_evaluation(
                                     event_data = json.loads(event_data_raw)
                                     
                                     # Detect HITL (local or remote/A2A)
-                                    interrupt_id, hitl_msg = check_for_hitl(event_data)
-                                    if interrupt_id:
+                                    detected_interrupt_id, hitl_msg = check_for_hitl(event_data)
+                                    if detected_interrupt_id:
                                         normalized_checkpoint = {
-                                            "interrupt_id": interrupt_id,
+                                            "interrupt_id": detected_interrupt_id,
                                             "message": hitl_msg or "Confirmation required to proceed."
                                         }
                                         yield f"event: checkpoint\ndata: {json.dumps(normalized_checkpoint)}\n\n"
