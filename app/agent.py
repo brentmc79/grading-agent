@@ -613,7 +613,8 @@ async def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport 
         final_report_obj = final_report
 
     try:
-        db = firestore.AsyncClient(database=FIRESTORE_DATABASE)
+        project_id = os.environ.get("GCP_PROJECT")
+        db = firestore.AsyncClient(project=project_id, database=FIRESTORE_DATABASE)
         doc_ref = db.collection("evaluations").document(session_id)
         await doc_ref.set(
             {
