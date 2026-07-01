@@ -25,6 +25,7 @@ from google.adk.models import Gemini
 from google.adk.workflow import Workflow, node, JoinNode, START
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.events.request_input import RequestInput
 from google.genai import types
 
 import os
@@ -131,14 +132,49 @@ infra_evaluator = Agent(
 
 
 # 3. Define Nodes
-@node
-def prep_node(node_input: Any) -> str:
-    """Prepares the input for the evaluators."""
-    if hasattr(node_input, "parts") and node_input.parts:
-        return node_input.parts[0].text
-    elif isinstance(node_input, dict) and "text" in node_input:
-        return node_input["text"]
-    return str(node_input)
+@node(rerun_on_resume=True)
+async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None]:
+    """Prepares the input and asks for confirmation if it's a GitHub URL."""
+    target_url = ctx.state.get("target_url")
+    print(f"prep_node: target_url={target_url}, resume_inputs={ctx.resume_inputs}", flush=True)
+
+    if not target_url:
+        text = ""
+        if hasattr(node_input, "parts") and node_input.parts:
+            text = node_input.parts[0].text
+        elif isinstance(node_input, dict) and "text" in node_input:
+            text = node_input["text"]
+        else:
+            text = str(node_input)
+        
+        target_url = text
+        yield Event(state={"target_url": target_url})
+
+    if "github.com" in target_url:
+        if not ctx.resume_inputs or "confirm_eval" not in ctx.resume_inputs:
+            yield RequestInput(
+                interrupt_id="confirm_eval",
+                message=f"Do you want to proceed with evaluating the repository: {target_url}? (yes/no)",
+            )
+            return
+
+        confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
+        if isinstance(confirmation_raw, dict):
+            confirmation = confirmation_raw.get("result", "")
+        else:
+            confirmation = str(confirmation_raw)
+
+        confirmation = confirmation.strip().lower()
+        if confirmation not in ["yes", "y"]:
+            yield Event(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="Evaluation cancelled by user.")],
+                )
+            )
+            return
+
+    yield Event(output=target_url)
 
 
 collect_grades = JoinNode(name="collect_grades")
@@ -259,12 +295,22 @@ class WorkflowAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
-        workflow_ctx = Context(ctx, node=self._workflow)
+        # Extract resume_inputs from user_content if present
+        resume_inputs = {}
+        if ctx.user_content and ctx.user_content.parts:
+            for part in ctx.user_content.parts:
+                if part.function_response and part.function_response.id:
+                    resume_inputs[part.function_response.id] = part.function_response.response
+
+        workflow_ctx = Context(ctx, node=self._workflow, resume_inputs=resume_inputs)
         async for event in self._workflow.run(ctx=workflow_ctx, node_input=ctx.user_content):
             yield event
+        
+        paused = bool(workflow_ctx.interrupt_ids)
+        print(f"WorkflowAgent: finished run, workflow_ctx.interrupt_ids={workflow_ctx.interrupt_ids}, paused={paused}", flush=True)
 
-        # Explicitly transfer back to parent to continue the turn
-        if self.parent_agent:
+        # Explicitly transfer back to parent to continue the turn, only if not paused
+        if self.parent_agent and not paused:
             yield Event(
                 invocation_id=ctx.invocation_id,
                 author=self.name,
@@ -282,8 +328,9 @@ assessment_coordinator = Agent(
     model=Gemini(model="gemini-2.5-pro"),
     instruction="""You are the Assessment Coordinator. 
     Your job is to coordinate the evaluation of a codebase or agent configuration.
-    When you receive a URL or a codebase description, you must route it to the `evaluation_workflow` sub-agent.
-    Once the workflow completes and returns the FinalReport, you must format the final output as a detailed markdown report for the user.
+    1. When you receive a URL or a codebase description, you must route it to the `evaluation_workflow` sub-agent.
+    2. If the `evaluation_workflow` has paused to ask the user for confirmation or input, and the user responds, you must call the `evaluation_workflow` again, passing the user's response to it so it can resume.
+    3. Once the workflow completes and returns the FinalReport, you must format the final output as a detailed markdown report for the user.
     Important: Include the total score exactly as returned (e.g., X/95), and list the individual category grades with their scores (out of 20 for Tools, Memory, Orchestration, Observability; and out of 15 for Infrastructure). Do not scale or modify the scores.
     Include the evidence and recovery instructions for each category, and the overall summary.
     """,
