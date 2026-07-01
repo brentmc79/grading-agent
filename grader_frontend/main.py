@@ -232,8 +232,8 @@ async def stream_evaluation(session_id: str, url: str):
                                     # ADK yields RequestInput which might have 'interrupt_id'
                                     if "interrupt_id" in event_data:
                                         yield f"event: checkpoint\ndata: {event_data_raw}\n\n"
-                                    # Check if it is the final report
-                                    elif "output" in event_data and isinstance(event_data["output"], dict) and "total_score" in event_data["output"]:
+                                    # Check if it is the final report from the evaluation workflow
+                                    elif event_data.get("author") == "evaluation_workflow" and "output" in event_data and isinstance(event_data["output"], dict) and "total_score" in event_data["output"]:
                                         yield f"event: complete\ndata: {event_data_raw}\n\n"
                                     else:
                                         yield f"data: {event_data_raw}\n\n"
