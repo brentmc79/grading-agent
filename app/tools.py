@@ -13,6 +13,22 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("grading_agent.tools")
 
+IGNORED_EXTENSIONS = {
+    # Images
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "tiff", "webp", "svg",
+    # Video
+    "mp4", "mkv", "avi", "mov", "webm", "flv",
+    # Audio
+    "mp3", "wav", "flac", "ogg", "m4a",
+    # Archives
+    "zip", "tar", "gz", "rar", "7z",
+    # Documents
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    # Others
+    "pyc", "so", "dll", "exe", "bin", "woff", "woff2", "ttf", "eot",
+}
+
+
 
 def _resolve_safe_path(repo_root: str, relative_path: str) -> str:
     """Resolves a relative path and ensures it is within the repo_root."""
@@ -300,8 +316,13 @@ def search_code(
         repo_root = os.path.abspath(repo_root)
         for root, _, files in os.walk(repo_root):
             for file in files:
-                if extension and not file.endswith(f".{extension}"):
-                    continue
+                if extension:
+                    if not file.endswith(f".{extension}"):
+                        continue
+                else:
+                    ext = file.split(".")[-1].lower() if "." in file else ""
+                    if ext in IGNORED_EXTENSIONS:
+                        continue
 
                 file_path = os.path.join(root, file)
                 rel_path = os.path.relpath(file_path, repo_root)

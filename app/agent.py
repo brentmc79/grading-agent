@@ -266,7 +266,7 @@ infra_evaluator_flash = Agent(
 # Pro Evaluators
 tool_evaluator_pro = Agent(
     name="tool_evaluator_pro",
-    model=model_pro,
+    model=model_flash,
     instruction=TOOL_EVALUATOR_INSTRUCTION,
     mode="single_turn",
     output_schema=CategoryGrade,
@@ -290,7 +290,7 @@ orchestration_evaluator_pro = Agent(
 )
 observability_evaluator_pro = Agent(
     name="observability_evaluator_pro",
-    model=model_pro,
+    model=model_flash,
     instruction=OBSERVABILITY_EVALUATOR_INSTRUCTION,
     mode="single_turn",
     output_schema=CategoryGrade,
@@ -298,7 +298,7 @@ observability_evaluator_pro = Agent(
 )
 infra_evaluator_pro = Agent(
     name="infra_evaluator_pro",
-    model=model_pro,
+    model=model_flash,
     instruction=INFRA_EVALUATOR_INSTRUCTION,
     mode="single_turn",
     output_schema=CategoryGrade,
@@ -655,6 +655,7 @@ async def store_report(node_input: dict[str, Any], ctx: Context) -> FinalReport 
 evaluation_workflow = Workflow(
     name="evaluation_workflow",
     description="Evaluates a codebase or agent configuration and returns a structured final report.",
+    max_concurrency=1,
     edges=[
         (START, prep_node),
         # Simple path (Flash)

@@ -204,3 +204,7 @@ tools/a2a-inspector/
 
 # Deployment metadata
 deployment_metadata.json
+
+# Cloned repositories for evaluation
+cloned_repos/
+

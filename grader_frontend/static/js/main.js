@@ -78,6 +78,10 @@ function showTerminal(title = "agent_evaluation.log") {
 
 
 function formatAgentEvent(eventData) {
+    if (eventData.errorCode || eventData.errorMessage) {
+        return `<span class="text-red-400 font-bold">[Error ${eventData.errorCode || 'UNKNOWN'}]</span> ${eventData.errorMessage || 'No details available.'}`;
+    }
+
     const author = eventData.author || "System";
     let text = "";
 
@@ -170,8 +174,8 @@ function connectStream(sessionId, url, isResume = false, responseText = null, in
         document.getElementById("status-spinner").className = "fa-solid fa-circle-check text-xs text-emerald-400";
         document.getElementById("close-terminal-btn").classList.remove("hidden");
         
-        // Refresh the grid to show the new result
-        fetchSubmissions();
+        // Refresh the grid to show the new result after a short delay to allow Firestore indexing
+        setTimeout(fetchSubmissions, 1500);
     });
 
     eventSource.addEventListener("close", (event) => {
@@ -186,8 +190,8 @@ function connectStream(sessionId, url, isResume = false, responseText = null, in
             document.getElementById("status-spinner").className = "fa-solid fa-circle-check text-xs text-emerald-400";
             logToTerminal("Evaluation finished.", "info");
         }
-        document.getElementById("close-terminal-btn").classList.remove("hidden");
-        fetchSubmissions();
+        // Refresh the grid to show the new result after a short delay to allow Firestore indexing
+        setTimeout(fetchSubmissions, 1500);
     });
 
     eventSource.onerror = (event) => {
@@ -303,7 +307,7 @@ async function fetchSubmissions() {
     const grid = document.getElementById("projects-grid");
     
     try {
-        const response = await fetch("/api/submissions");
+        const response = await fetch(`/api/submissions?t=${Date.now()}`);
         if (!response.ok) throw new Error("Failed to fetch submissions");
         
         const projects = await response.json();
