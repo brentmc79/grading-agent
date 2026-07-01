@@ -219,22 +219,44 @@ def check_for_hitl(event_data: dict) -> tuple[str | None, str | None]:
 
 
 @app.get("/api/stream/{session_id}")
-async def stream_evaluation(session_id: str, url: str):
+async def stream_evaluation(
+    session_id: str, 
+    url: str, 
+    resume: bool = False, 
+    response: str = None, 
+    interrupt_id: str = None
+):
     """Streams the evaluation progress from the backend using SSE."""
     
     async def event_generator() -> AsyncGenerator[str, None]:
         headers = await get_backend_headers()
         run_sse_url = f"{BACKEND_URL}/run_sse"
         
+        if resume and interrupt_id and response:
+            new_message = {
+                "role": "user",
+                "parts": [
+                    {
+                        "function_response": {
+                            "name": "adk_request_input",
+                            "id": interrupt_id,
+                            "response": {"result": response},
+                        }
+                    }
+                ],
+            }
+            logger.info(f"Streaming resume for session {session_id} with response {response}")
+        else:
+            new_message = {"role": "user", "parts": [{"text": f"Evaluate {url}"}]}
+            logger.info(f"Connecting to backend stream at {run_sse_url} for session {session_id}")
+
         data = {
             "app_name": "app",
             "user_id": "dashboard_user",
             "session_id": session_id,
-            "new_message": {"role": "user", "parts": [{"text": f"Evaluate {url}"}]},
+            "new_message": new_message,
             "streaming": True,
         }
-        
-        logger.info(f"Connecting to backend stream at {run_sse_url} for session {session_id}")
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -275,88 +297,6 @@ async def stream_evaluation(session_id: str, url: str):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-
-@app.post("/api/resume")
-async def resume_evaluation(payload: ResumeRequest):
-    """Resumes a paused evaluation session with the user's response."""
-    headers = await get_backend_headers()
-    run_sse_url = f"{BACKEND_URL}/run_sse"
-    
-    # To resume, we send a new message to the same session.
-    # The ADK runner will associate the response with the pending RequestInput.
-    # We must format the response as a function response or plain text depending on how it's handled.
-    # For our prep_node, it checks ctx.resume_inputs.get("confirm_eval")
-    # Actually, the ADK /run_sse handler expects the resume input to be passed in a specific way if it is a resume.
-    # Wait!
-    # In `WorkflowAgent._run_async_impl`:
-    #   resume_inputs = {}
-    #   if ctx.user_content and ctx.user_content.parts:
-    #       for part in ctx.user_content.parts:
-    #           if part.function_response and part.function_response.id:
-    #               resume_inputs[part.function_response.id] = part.function_response.response
-    #
-    # So we need to send the response as a `function_response` in the `new_message`!
-    # Schema for function_response in Part:
-    # {
-    #   "function_response": {
-    #     "name": "confirm_eval", # or whatever, but the ID is what matters
-    #     "id": interrupt_id,
-    #     "response": {"result": payload.response} # or just the string if it supports it, but our prep_node does:
-    #     # confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
-    #     # if isinstance(confirmation_raw, dict): confirmation = confirmation_raw.get("result", "")
-    #     # else: confirmation = str(confirmation_raw)
-    #   }
-    # }
-    
-    data = {
-        "app_name": "app",
-        "user_id": "dashboard_user",
-        "session_id": payload.session_id,
-        "new_message": {
-            "role": "user",
-            "parts": [
-                {
-                    "function_response": {
-                        "name": "confirm_eval",  # Dummy name
-                        "id": payload.interrupt_id,
-                        "response": {"result": payload.response},
-                    }
-                }
-            ],
-        },
-        "streaming": True,
-    }
-    
-    logger.info(f"Resuming session {payload.session_id} with response {payload.response}")
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(run_sse_url, headers=headers, json=data) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(f"Failed to resume session: {resp.status} - {error_text}")
-                    raise HTTPException(status_code=resp.status, detail=f"Backend resume failed: {error_text}")
-                
-                # We don't need to stream the response here because the client should still be listening
-                # to the original SSE stream (or they will reconnect).
-                # Actually, the original SSE stream might have closed if it was waiting.
-                # Wait! Does the original SSE stream close when it yields RequestInput?
-                # In ADK, when a workflow pauses, the `run` generator finishes (yields the last event and stops).
-                # So the SSE connection WILL close.
-                # When we resume, we start a NEW `/run_sse` request, which will yield new events.
-                # So the client needs to connect to the stream AGAIN after calling resume!
-                # Yes! The client JavaScript must handle this:
-                # 1. Submit -> Get session_id -> Connect SSE.
-                # 2. SSE yields checkpoint -> Connection closes (or we close it) -> Show Modal.
-                # 3. User clicks Yes -> POST /api/resume -> Connect SSE AGAIN to the same session_id.
-                # 4. SSE yields progress -> Complete -> Close.
-                
-                return {"status": "resumed"}
-    except Exception as e:
-        logger.error(f"Error during resume: {e}")
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/submissions/{session_id}/report")
