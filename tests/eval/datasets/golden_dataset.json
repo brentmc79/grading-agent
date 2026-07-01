@@ -1,0 +1,26 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "eval_adk_samples",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Evaluate https://github.com/google/adk-samples"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "eval_adk_core",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Evaluate https://github.com/google/adk"
+          }
+        ]
+      }
+    }
+  ]
+}
