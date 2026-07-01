@@ -195,19 +195,32 @@ async def prep_node(node_input: Any, ctx: Context) -> AsyncGenerator[Event, None
         return
 
     if "github.com" in target_url and not EVAL_MODE:
-        if not ctx.resume_inputs or "confirm_eval" not in ctx.resume_inputs:
+        confirmation = None
+        if ctx.resume_inputs and "confirm_eval" in ctx.resume_inputs:
+            confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
+            if isinstance(confirmation_raw, dict):
+                confirmation = confirmation_raw.get("result", "")
+            else:
+                confirmation = str(confirmation_raw)
+        elif node_input:
+            text = ""
+            if hasattr(node_input, "parts") and node_input.parts:
+                text = node_input.parts[0].text
+            elif isinstance(node_input, dict) and "text" in node_input:
+                text = node_input["text"]
+            else:
+                text = str(node_input)
+            
+            if text.strip().lower() in ["yes", "y", "no", "n"]:
+                confirmation = text
+
+        if confirmation is None:
             logger.info("prep_node: pausing for user confirmation", extra={"extra_fields": {"target_url": target_url}})
             yield RequestInput(
                 interrupt_id="confirm_eval",
                 message=f"Do you want to proceed with evaluating the repository: {target_url}? (yes/no)",
             )
             return
-
-        confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
-        if isinstance(confirmation_raw, dict):
-            confirmation = confirmation_raw.get("result", "")
-        else:
-            confirmation = str(confirmation_raw)
 
         confirmation = confirmation.strip().lower()
         logger.info("prep_node: resumed with confirmation", extra={"extra_fields": {"confirmation": confirmation}})
