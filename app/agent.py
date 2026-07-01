@@ -37,6 +37,7 @@ import json
 import sys
 import re
 import google.auth
+import aiohttp
 from google.cloud import firestore
 from .tools import (
     clone_repository,
@@ -318,12 +319,41 @@ def _count_files(directory: str) -> int:
     return count
 
 
+async def verify_github_repo(url: str, token: str | None = None) -> bool:
+    """Verifies if a GitHub URL points to an accessible repository."""
+    match = re.match(r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if not match:
+        return False
+    
+    owner, repo = match.groups()
+    api_url = f"https://api.github.com/repos/{owner}/{repo}"
+    
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.head(api_url, headers=headers, timeout=5) as response:
+                return response.status == 200
+    except Exception as e:
+        logger.warning(
+            "Failed to verify GitHub repo via API",
+            exc_info=True,
+            extra={"extra_fields": {"url": url}}
+        )
+        return False
+
+
 # 3. Define Nodes
 @node(rerun_on_resume=True)
 async def prep_node(
     node_input: Any, ctx: Context
 ) -> AsyncGenerator[Event | RequestInput, None]:
-    """Prepares the input and asks for confirmation if it's a GitHub URL."""
+    """Prepares the input and conditionally asks for confirmation."""
     logger.info(
         "prep_node started", extra={"extra_fields": {"node_input": str(node_input)}}
     )
@@ -357,77 +387,113 @@ async def prep_node(
         )
 
     is_local = os.path.isdir(target_url)
-    if "github.com" not in target_url and not is_local:
-        logger.warning(
-            "prep_node: invalid URL or path",
+    token = os.environ.get("GITHUB_PAT") or os.environ.get("GITHUB_TOKEN")
+    is_valid_github = await verify_github_repo(target_url, token)
+
+    # If it is a valid GitHub repo or a local directory, proceed immediately
+    if is_valid_github or is_local:
+        logger.info(
+            "prep_node: Valid target detected. Proceeding without confirmation.",
+            extra={"extra_fields": {"target_url": target_url, "is_local": is_local, "is_github": is_valid_github}},
+        )
+        try:
+            local_path = clone_repository(target_url, ctx.session.id)
+            ctx.state["local_path"] = local_path
+            logger.info(
+                "prep_node: successfully cloned repository",
+                extra={"extra_fields": {"local_path": local_path}},
+            )
+            
+            # Determine complexity
+            file_count = _count_files(local_path)
+            is_complex = file_count > 20
+            ctx.state["is_complex"] = is_complex
+            logger.info(
+                f"Repository complexity: file_count={file_count}, is_complex={is_complex}",
+                extra={"extra_fields": {"file_count": file_count, "is_complex": is_complex}},
+            )
+            
+            logger.info(
+                "prep_node completed",
+                extra={"extra_fields": {"target_url": target_url, "local_path": local_path}},
+            )
+            route = "complex" if is_complex else "simple"
+            yield Event(output=local_path, route=route)
+            return
+        except Exception as e:
+            logger.error(
+                "prep_node: failed to clone repository",
+                exc_info=True,
+                extra={"extra_fields": {"error": str(e)}},
+            )
+            yield Event(
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part.from_text(
+                            text=f"Error: Failed to clone repository {target_url}. Details: {str(e)}"
+                        )
+                    ],
+                )
+            )
+            return
+
+    # If we get here, it is NOT a valid GitHub URL and NOT a local directory.
+    # We ask for confirmation.
+    confirmation = None
+    if ctx.resume_inputs and "confirm_eval" in ctx.resume_inputs:
+        confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
+        if isinstance(confirmation_raw, dict):
+            confirmation = confirmation_raw.get("result", "")
+        else:
+            confirmation = str(confirmation_raw)
+    elif node_input:
+        text = ""
+        if hasattr(node_input, "parts") and node_input.parts:
+            text = node_input.parts[0].text
+        elif isinstance(node_input, dict) and "text" in node_input:
+            text = node_input["text"]
+        else:
+            text = str(node_input)
+
+        if text.strip().lower() in ["yes", "y", "no", "n"]:
+            confirmation = text
+
+    if confirmation is None:
+        logger.info(
+            "prep_node: Ambiguous target, pausing for confirmation",
+            extra={"extra_fields": {"target_url": target_url}},
+        )
+        yield RequestInput(
+            interrupt_id="confirm_eval",
+            message=f"The URL or path '{target_url}' does not appear to be a valid GitHub repository or local directory. Do you want to try evaluating it anyway? (yes/no)",
+        )
+        return
+
+    confirmation = confirmation.strip().lower()
+    logger.info(
+        "prep_node: resumed with confirmation",
+        extra={"extra_fields": {"confirmation": confirmation}},
+    )
+    if confirmation not in ["yes", "y"]:
+        logger.info(
+            "prep_node: evaluation cancelled by user",
             extra={"extra_fields": {"target_url": target_url}},
         )
         yield Event(
             content=types.Content(
                 role="model",
-                parts=[
-                    types.Part.from_text(
-                        text="Error: Only GitHub repositories or local directories are supported for evaluation."
-                    )
-                ],
+                parts=[types.Part.from_text(text="Evaluation cancelled by user.")],
             )
         )
         return
 
-    if not EVAL_MODE:
-        confirmation = None
-        if ctx.resume_inputs and "confirm_eval" in ctx.resume_inputs:
-            confirmation_raw = ctx.resume_inputs.get("confirm_eval", "")
-            if isinstance(confirmation_raw, dict):
-                confirmation = confirmation_raw.get("result", "")
-            else:
-                confirmation = str(confirmation_raw)
-        elif node_input:
-            text = ""
-            if hasattr(node_input, "parts") and node_input.parts:
-                text = node_input.parts[0].text
-            elif isinstance(node_input, dict) and "text" in node_input:
-                text = node_input["text"]
-            else:
-                text = str(node_input)
-
-            if text.strip().lower() in ["yes", "y", "no", "n"]:
-                confirmation = text
-
-        if confirmation is None:
-            logger.info(
-                "prep_node: pausing for user confirmation",
-                extra={"extra_fields": {"target_url": target_url}},
-            )
-            yield RequestInput(
-                interrupt_id="confirm_eval",
-                message=f"Do you want to proceed with evaluating the repository: {target_url}? (yes/no)",
-            )
-            return
-
-        confirmation = confirmation.strip().lower()
-        logger.info(
-            "prep_node: resumed with confirmation",
-            extra={"extra_fields": {"confirmation": confirmation}},
-        )
-        if confirmation not in ["yes", "y"]:
-            logger.info(
-                "prep_node: evaluation cancelled by user",
-                extra={"extra_fields": {"target_url": target_url}},
-            )
-            yield Event(
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part.from_text(text="Evaluation cancelled by user.")],
-                )
-            )
-            return
-
+    # User said yes, try to clone anyway
     try:
         local_path = clone_repository(target_url, ctx.session.id)
         ctx.state["local_path"] = local_path
         logger.info(
-            "prep_node: successfully cloned repository",
+            "prep_node: successfully cloned repository (user forced)",
             extra={"extra_fields": {"local_path": local_path}},
         )
         
@@ -441,7 +507,8 @@ async def prep_node(
         )
     except Exception as e:
         logger.error(
-            "prep_node: failed to clone repository",
+            "prep_node: failed to clone repository (user forced)",
+            exc_info=True,
             extra={"extra_fields": {"error": str(e)}},
         )
         yield Event(
